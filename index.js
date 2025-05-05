@@ -15,7 +15,7 @@ const app = express();
 const Joi = require("joi");
 
 
-const expireTime = 24 * 60 * 60 * 1000; //expires after 1 day  (hours * minutes * seconds * millis)
+const expireTime = 60 * 60 * 1000; //expires after 1 hour  (hours * minutes * seconds * millis)
 
 /* secret information section */
 const mongodb_host = process.env.MONGODB_HOST;
@@ -34,6 +34,9 @@ const userCollection = database.db(mongodb_database).collection('users');
 
 app.use(express.urlencoded({extended: false}));
 
+app.use(express.static(__dirname + "/public"));
+
+
 var mongoStore = MongoStore.create({
 	mongoUrl: `mongodb+srv://${mongodb_user}:${mongodb_password}@${mongodb_host}/sessions`,
 	crypto: {
@@ -49,10 +52,105 @@ app.use(session({
 }
 ));
 
-app.get('/', (req,res) => {
-    res.send("<h1>Hello World!</h1>");
+
+
+/* === Homepage === */
+app.get("/", (req, res) => {
+    if (req.session.authenticated) {
+        res.send(`
+            <h1>Hello, ${req.session.username}!</h1>
+            <a href='/members'><button>Go to Members Area</button></a> |
+            <a href='/logout'><button>Logout</button></a>
+        `);
+    } else {
+        res.send(`
+            <h1>Welcome to the Website</h1>
+            <a href='/signup'><button>Sign Up</button></a> 
+            <br> <a href='/login'><button>Log In</button></a>
+        `);
+    }
 });
 
+
+/* === Signup Page === */
+app.get("/signup", (req, res) => {
+    res.send(`
+        <h2>Sign Up</h2>
+        <form action="/signupSubmit" method="POST">
+            <input type="text" name="name" placeholder="Name" required />
+           <br> <input type="email" name="email" placeholder="Email" required />
+            <br><input type="password" name="password" placeholder="Password" required />
+            <br><button type="submit">Sign Up</button>
+        </form>
+    `);
+});
+
+app.post("/signupSubmit", async (req, res) => {
+    const schema = Joi.object({
+        name: Joi.string().max(20).required(),
+        email: Joi.string().email().required(),
+        password: Joi.string().min(6).max(20).required(),
+    });
+
+    const { error } = schema.validate(req.body);
+    if (error) return res.send(`Error: ${error.details[0].message} <a href='/signup'><button>Try Again</button></a>`);
+
+    const hashedPassword = await bcrypt.hash(req.body.password, saltRounds);
+    await userCollection.insertOne({ name: req.body.name, email: req.body.email, password: hashedPassword });
+
+    req.session.authenticated = true;
+    req.session.username = req.body.name;
+    res.redirect("/");
+});
+
+
+/* === Login Page === */
+app.get("/login", (req, res) => {
+    res.send(`
+        <h2>Log In</h2>
+        <form action="/loginSubmit" method="POST">
+            <input type="email" name="email" placeholder="Email" required />
+          <br>  <input type="password" name="password" placeholder="Password" required />
+          <br>  <button type="submit">Login</button>
+        </form>
+    `);
+});
+
+app.post("/loginSubmit", async (req, res) => {
+    const user = await userCollection.findOne({ email: req.body.email });
+    if (!user || !(await bcrypt.compare(req.body.password, user.password))) {
+        return res.send("Invalid email or password. <a href='/login'>Try Again</a>");
+    }
+
+    req.session.authenticated = true;
+    req.session.username = user.name;
+    res.redirect("/");
+});
+
+
+
+/* === Members Page === */
+app.get("/members", (req, res) => {
+    if (!req.session.authenticated) return res.redirect("/");
+
+    const images = ["image1.jpg", "image2.jpg", "image3.jpg"];
+    const randomImage = images[Math.floor(Math.random() * images.length)];
+
+    res.send(`
+        <h2>Hello, ${req.session.username}!</h2>
+        <img src="/${randomImage}" alt="Random Image" style="width:300px; height:auto;">
+        <br> <a href="/logout"> <button>Sign Out</button> </a>
+    `);
+});
+
+
+/* === Logout === */
+app.get("/logout", (req, res) => {
+    req.session.destroy(() => res.redirect("/"));
+});
+
+
+/* === NoSQL Injection Protection Example === */
 app.get('/nosql-injection', async (req,res) => {
 	var username = req.query.user;
 
@@ -83,161 +181,7 @@ app.get('/nosql-injection', async (req,res) => {
     res.send(`<h1>Hello ${username}</h1>`);
 });
 
-app.get('/about', (req,res) => {
-    var color = req.query.color;
 
-    res.send("<h1 style='color:"+color+";'>Patrick Guichon</h1>");
-});
-
-app.get('/contact', (req,res) => {
-    var missingEmail = req.query.missing;
-    var html = `
-        email address:
-        <form action='/submitEmail' method='post'>
-            <input name='email' type='text' placeholder='email'>
-            <button>Submit</button>
-        </form>
-    `;
-    if (missingEmail) {
-        html += "<br> email is required";
-    }
-    res.send(html);
-});
-
-app.post('/submitEmail', (req,res) => {
-    var email = req.body.email;
-    if (!email) {
-        res.redirect('/contact?missing=1');
-    }
-    else {
-        res.send("Thanks for subscribing with your email: "+email);
-    }
-});
-
-
-app.get('/createUser', (req,res) => {
-    var html = `
-    create user
-    <form action='/submitUser' method='post'>
-    <input name='username' type='text' placeholder='username'>
-    <input name='password' type='password' placeholder='password'>
-    <button>Submit</button>
-    </form>
-    `;
-    res.send(html);
-});
-
-
-app.get('/login', (req,res) => {
-    var html = `
-    log in
-    <form action='/loggingin' method='post'>
-    <input name='username' type='text' placeholder='username'>
-    <input name='password' type='password' placeholder='password'>
-    <button>Submit</button>
-    </form>
-    `;
-    res.send(html);
-});
-
-app.post('/submitUser', async (req,res) => {
-    var username = req.body.username;
-    var password = req.body.password;
-
-	const schema = Joi.object(
-		{
-			username: Joi.string().alphanum().max(20).required(),
-			password: Joi.string().max(20).required()
-		});
-	
-	const validationResult = schema.validate({username, password});
-	if (validationResult.error != null) {
-	   console.log(validationResult.error);
-	   res.redirect("/createUser");
-	   return;
-   }
-
-    var hashedPassword = await bcrypt.hash(password, saltRounds);
-	
-	await userCollection.insertOne({username: username, password: hashedPassword});
-	console.log("Inserted user");
-
-    var html = "successfully created user";
-    res.send(html);
-});
-
-app.post('/loggingin', async (req,res) => {
-    var username = req.body.username;
-    var password = req.body.password;
-
-	const schema = Joi.string().max(20).required();
-	const validationResult = schema.validate(username);
-	if (validationResult.error != null) {
-	   console.log(validationResult.error);
-	   res.redirect("/login");
-	   return;
-	}
-
-	const result = await userCollection.find({username: username}).project({username: 1, password: 1, _id: 1}).toArray();
-
-	console.log(result);
-	if (result.length != 1) {
-		console.log("user not found");
-		res.redirect("/login");
-		return;
-	}
-	if (await bcrypt.compare(password, result[0].password)) {
-		console.log("correct password");
-		req.session.authenticated = true;
-		req.session.username = username;
-		req.session.cookie.maxAge = expireTime;
-
-		res.redirect('/loggedIn');
-		return;
-	}
-	else {
-		console.log("incorrect password");
-		res.redirect("/login");
-		return;
-	}
-});
-
-app.get('/loggedin', (req,res) => {
-    if (!req.session.authenticated) {
-        res.redirect('/login');
-    }
-    var html = `
-    You are logged in!
-    `;
-    res.send(html);
-});
-
-app.get('/logout', (req,res) => {
-	req.session.destroy();
-    var html = `
-    You are logged out.
-    `;
-    res.send(html);
-});
-
-
-app.get('/cat/:id', (req,res) => {
-
-    var cat = req.params.id;
-
-    if (cat == 1) {
-        res.send("Fluffy: <img src='/fluffy.gif' style='width:250px;'>");
-    }
-    else if (cat == 2) {
-        res.send("Socks: <img src='/socks.gif' style='width:250px;'>");
-    }
-    else {
-        res.send("Invalid cat id: "+cat);
-    }
-});
-
-
-app.use(express.static(__dirname + "/public"));
 
 app.get("*", (req,res) => {
 	res.status(404);
